@@ -1,5 +1,6 @@
 import numpy as np
 from trackml.dataset import load_event
+import pickle
 
 from data_path import DATA_PATH
 
@@ -39,19 +40,33 @@ def check_helix_params(X, S):
     X_ap = np.append(X, ones, axis=1)
     for x_ap in X_ap:
         result = np.matmul(np.matmul(x_ap, S), x_ap)
-        if np.matmul(np.matmul(x_ap, S), x_ap) > 1e-4:
-            print(result)
+        if result > 1e-3:
+            return False
+    return True
 
 
-def main():
-    EVENT_TITLE = '/train_100_events/event000001000'
-    hits, cells, particles, truth = load_event(DATA_PATH + EVENT_TITLE)
+def prepare_train_data(evens_path):
+    train_X_list = []
+    train_Y_list = []
+    hits, cells, particles, truth = load_event(evens_path)
     for idx, particle_row in particles.iterrows():
         if particle_row['nhits'] > 1:
             track = truth[truth['particle_id'] == particle_row['particle_id']]
             X = track[['tx', 'ty', 'tz']].as_matrix()
             S = get_helix_params(X)
-            check_helix_params(X, S)
+            if check_helix_params(X, S):
+                train_Y_list.append(np.concatenate([S[0], S[1, 0:3], S[2, 0:2], S[3, 0:1]]))
+                train_X_list.append(np.concatenate([particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].as_matrix(),
+                                                    particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz']].map(
+                                                        np.square).as_matrix()]))
+    return np.array(train_X_list), np.array(train_Y_list)
+
+
+def main():
+    EVENT_TITLE = '/train_100_events/event000001000'
+    train_X_array, train_Y_array = prepare_train_data(DATA_PATH + EVENT_TITLE)
+    pickle.dump(train_X_array, open(DATA_PATH + '/train_X.pkl', 'wb'))
+    pickle.dump(train_Y_array, open(DATA_PATH + '/train_Y.pkl', 'wb'))
 
 
 if __name__ == '__main__':
