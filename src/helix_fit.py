@@ -58,7 +58,8 @@ def prepare_train_data(evens_path):
                 train_Y_list.append(np.concatenate([S[0], S[1, 0:3], S[2, 0:2], S[3, 0:1]]))
                 train_X_list.append(np.concatenate([particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].as_matrix(),
                                                     particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz']].map(
-                                                        np.square).as_matrix()]))
+                                                        np.square).as_matrix(),
+                                                    np.array([particle_row['vx']*particle_row['vy'], particle_row['vx']*particle_row['vz'], particle_row['vy']*particle_row['vz'], particle_row['px']*particle_row['py'], particle_row['px']*particle_row['pz'], particle_row['py']*particle_row['pz']])]))
     return np.array(train_X_list, dtype=np.float64), np.array(train_Y_list, dtype=np.float64)
 
 

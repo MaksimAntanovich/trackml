@@ -1,7 +1,7 @@
-import numpy as np
+import pickle
+
 import mxnet as mx
 from mxnet import nd, autograd, gluon
-import pickle
 
 from data_path import DATA_PATH
 
@@ -10,35 +10,37 @@ model_ctx = mx.gpu()
 
 X = pickle.load(open(DATA_PATH + '/train_X.pkl', 'rb'))
 print(X.shape)
+print(X[:2800].shape)
+print(X[0,:])
 y = pickle.load(open(DATA_PATH + '/train_Y.pkl', 'rb'))
 print(y.shape)
 
 num_inputs = X.shape[1]
 num_outputs = y.shape[1]
 
-batch_size = 4
-train_data = gluon.data.DataLoader(gluon.data.ArrayDataset(X[2500:], y[2500:]),
+batch_size = 16
+train_data = gluon.data.DataLoader(gluon.data.ArrayDataset(X[:2800], y[:2800]),
                                       batch_size=batch_size, shuffle=True)
 
-test_data = gluon.data.DataLoader(gluon.data.ArrayDataset(X[:2500], y[:2500]),
+test_data = gluon.data.DataLoader(gluon.data.ArrayDataset(X[2800:], y[2800:]),
                                       batch_size=batch_size, shuffle=True)
 
-num_hidden = 16
+num_hidden = 40
 net = gluon.nn.Sequential()
 with net.name_scope():
-    net.add(gluon.nn.Dense(num_inputs, activation="relu", dtype='float64'))
-    net.add(gluon.nn.Dense(num_hidden, activation="relu", dtype='float64'))
+    net.add(gluon.nn.Dense(num_inputs, activation='tanh', dtype='float64'))
+    net.add(gluon.nn.Dense(num_hidden, activation='tanh', dtype='float64'))
     net.add(gluon.nn.Dense(num_outputs, dtype='float64'))
 
-net.collect_params().initialize(mx.init.Normal(sigma=.1), ctx=model_ctx)
+net.collect_params().initialize(mx.init.Normal(sigma=.0001), ctx=model_ctx)
 
-softmax_cross_entropy = gluon.loss.L1Loss()
+l2loss = gluon.loss.L2Loss()
 
 trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': .01})
 
 
 def evaluate_accuracy(data_iterator, net):
-    acc = mx.metric.RMSE()
+    acc = mx.metric.MSE()
     for i, (data, label) in enumerate(data_iterator):
         data = data.as_in_context(model_ctx)
         label = label.as_in_context(model_ctx)
@@ -46,7 +48,7 @@ def evaluate_accuracy(data_iterator, net):
         acc.update(preds=output, labels=label)
     return acc.get()[1]
 
-epochs = 10
+epochs = 200
 smoothing_constant = .01
 
 for e in range(epochs):
@@ -56,7 +58,7 @@ for e in range(epochs):
         label = label.as_in_context(model_ctx)
         with autograd.record():
             output = net(data)
-            loss = softmax_cross_entropy(output, label)
+            loss = l2loss(output, label)
         loss.backward()
         trainer.step(data.shape[0])
         cumulative_loss += nd.sum(loss).asscalar()
