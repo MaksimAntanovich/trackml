@@ -1,13 +1,18 @@
 from collections import defaultdict
 
-from data_path import DATA_PATH
-from trackml.dataset import load_event
 import numpy as np
+import pandas as pd
 import xgboost as xgb
+from numba import jit
+from trackml.dataset import load_event
+from trackml.score import score_event
+
+from data_path import DATA_PATH
 
 EVENTS = ['/train_100_events/event00000' + str(1000 + i) for i in range(0, 100)]
 
 
+@jit
 def get_helix_params(X):
     Z = np.zeros((X.shape[0], 10), np.float32)
     Z[:, 0] = X[:, 0] ** 2
@@ -43,7 +48,7 @@ def check_helix_params(X, S):
     X_ap = np.append(X, ones, axis=1)
     for x_ap in X_ap:
         result = np.matmul(np.matmul(x_ap, S), x_ap)
-        if result > 1e-4:
+        if result > 1e-6:
             return False
     return True
 
@@ -54,13 +59,13 @@ def prepare_train_data(truth, particles):
     for idx, particle_row in particles.iterrows():
         if particle_row['nhits'] > 1:
             track = truth[truth['particle_id'] == particle_row['particle_id']]
-            X = track[['tx', 'ty', 'tz']].as_matrix()
+            X = track[['tx', 'ty', 'tz']].values
             S = get_helix_params(X)
             if check_helix_params(X, S):
                 train_Y_list.append(np.concatenate([S[0], S[1, 0:3], S[2, 0:2], S[3, 0:1]]))
-                train_X_list.append(np.concatenate([particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].as_matrix(),
+                train_X_list.append(np.concatenate([particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].values,
                                                     particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz']].map(
-                                                        np.square).as_matrix(),
+                                                        np.square).values,
                                                     np.array([particle_row['vx'] * particle_row['vy'],
                                                               particle_row['vx'] * particle_row['vz'],
                                                               particle_row['vy'] * particle_row['vz'],
@@ -75,9 +80,9 @@ def prepare_test_data(particles):
     for idx, particle_row in particles.iterrows():
         test_X_list.append(np.concatenate([
             particle_row[['particle_id']],
-            particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].as_matrix(),
+            particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz', 'q']].values,
             particle_row[['vx', 'vy', 'vz', 'px', 'py', 'pz']].map(
-                np.square).as_matrix(),
+                np.square).values,
             np.array([particle_row['vx'] * particle_row['vy'],
                       particle_row['vx'] * particle_row['vz'],
                       particle_row['vy'] * particle_row['vz'],
@@ -87,10 +92,9 @@ def prepare_test_data(particles):
     return np.array(test_X_list, dtype=np.float64)
 
 
+@jit
 def find_helix(hit, helixes):
     S = np.zeros((4, 4), np.float64)
-    result = 100
-    helix_id = None
     for helix in helixes:
         S[0, 0] = helix[1]
         S[0, 1] = S[1, 0] = helix[2]
@@ -103,17 +107,15 @@ def find_helix(hit, helixes):
         S[3, 2] = S[2, 3] = helix[9]
         S[3, 3] = helix[10]
         temp = np.matmul(np.matmul(hit, S), hit)
-        if temp < result:
-            result = temp
-            helix_id = helix[0]
-    return int(helix_id)
+        if temp < 1e-6:
+            return int(helix[0])
 
 
-for i in range(0, 5):
+for i in range(0, 1):
     EVENTS_TRAIN = ['/train_100_events/event000001001']
     EVENTS_TEST = ['/train_100_events/event000001002']
-#    EVENTS_TEST = EVENTS[(i * 20):(20 * (i + 1))]
-#    EVENTS_TRAIN = EVENTS[0:(i * 20)] + EVENTS[(20 * (i + 1)):100]
+    #    EVENTS_TEST = EVENTS[(i * 20):(20 * (i + 1))]
+    #    EVENTS_TRAIN = EVENTS[0:(i * 20)] + EVENTS[(20 * (i + 1)):100]
     X_train = None
     y_train = None
     for EVENT in EVENTS_TRAIN:
@@ -125,25 +127,27 @@ for i in range(0, 5):
         else:
             X_train = np.vstack((X_train, X_event))
             y_train = np.vstack((y_train, y_event))
-        print(EVENT + ' processed')
     regressors = []
     for i in range(0, y_train.shape[1]):
         regressor = xgb.XGBRegressor()
         regressor = regressor.fit(X=X_train, y=y_train[:, i])
         regressors.append(regressor)
     for EVENT in EVENTS_TEST:
-        hits, cells, particles, _ = load_event(DATA_PATH + EVENT)
+        hits, cells, particles, truth = load_event(DATA_PATH + EVENT)
         X_predict = prepare_test_data(particles)
         predicts = [X_predict[:, 0]]
         for regressor in regressors:
             predicts.append(regressor.predict(data=X_predict[:, 1:]))
         predicted_helix_params = np.transpose(np.vstack(tuple(predicts)))
         predicted_tracks = defaultdict(list)
-        for hit in hits.as_matrix():
-            predicted_tracks[find_helix(hit[1:4], X_predict)].append(hit[0])
+        hits.insert(loc=4, column='1', value=1)
+        for hit in hits.values:
+            predicted_tracks[find_helix(hit[1:5], X_predict)].append(hit[0])
+        predicted_tracks_dataframe = {'track_id': [], 'hit_id': []}
         for id, track in predicted_tracks.items():
             if not track:
                 del predicted_tracks[id]
             else:
-                for hit in track:
-                    print('{}, {}, {}'.format(EVENT, id, hit))
+                predicted_tracks_dataframe['track_id'] += [id] * len(track)
+                predicted_tracks_dataframe['hit_id'] += track
+        print(score_event(truth, pd.DataFrame.from_dict(predicted_tracks_dataframe)))
